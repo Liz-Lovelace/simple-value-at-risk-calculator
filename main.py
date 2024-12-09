@@ -3,24 +3,54 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.stats import norm, t
 
-# Load data from Excel file
-file_path = "testvar.xlsx"  # Replace with your actual file path
-data = pd.read_excel(file_path)
+def load_data():
+    """
+    Tries to load data from 'portfolio_data.csv' first.
+    If file doesn't exist, creates it with instructions for pasting data.
+    """
+    try:
+        # Try to read existing CSV file
+        data = pd.read_csv('portfolio_data.csv')
+        print("Data loaded from portfolio_data.csv")
+    except FileNotFoundError:
+        # Create template file with instructions
+        with open('portfolio_data.csv', 'w') as f:
+            f.write("# Paste the data from browser console below this line (including the header)\n")
+            f.write("# Delete this comment line and the one above\n")
+            f.write("# Example format:\n")
+            f.write("# Ticker,Date,Price\n")
+            f.write("# AAPL,2024-01-01,100.00\n")
+        print("\nCreated portfolio_data.csv")
+        print("Please paste the data from browser console into portfolio_data.csv")
+        print("Delete the comment lines (starting with #)")
+        print("Then run this script again")
+        exit()
 
-# Ensure columns are correctly named
-data.columns = ['Ticker', 'Date', 'Price']
+    # Ensure columns are correctly named
+    if not all(col in data.columns for col in ['Ticker', 'Date', 'Price']):
+        raise ValueError("CSV file must have columns: Ticker, Date, Price")
 
-# Convert Date column to datetime
-data['Date'] = pd.to_datetime(data['Date'])
+    # Convert Date column to datetime
+    data['Date'] = pd.to_datetime(data['Date'])
 
-# Convert Price column to numeric
-data['Price'] = pd.to_numeric(data['Price'], errors='coerce')
+    # Convert Price column to numeric
+    data['Price'] = pd.to_numeric(data['Price'], errors='coerce')
 
-# Drop rows with invalid (NaN) prices
-data = data.dropna(subset=['Price'])
+    # Drop rows with invalid (NaN) prices
+    data = data.dropna(subset=['Price'])
 
-# Sort data by Date and Ticker
-data = data.sort_values(by=['Date', 'Ticker'])
+    # Sort data by Date and Ticker
+    return data.sort_values(by=['Date', 'Ticker'])
+
+# Load the data
+data = load_data()
+
+# Print summary of loaded data
+print("\nLoaded data summary:")
+print(f"Number of tickers: {len(data['Ticker'].unique())}")
+print("Tickers:", ", ".join(data['Ticker'].unique()))
+print(f"Date range: {data['Date'].min()} to {data['Date'].max()}")
+print(f"Total number of price points: {len(data)}\n")
 
 # Step 1: Ask for Investment Amount and Percentages
 investment_amount = float(input("Enter the total amount of money to invest: "))

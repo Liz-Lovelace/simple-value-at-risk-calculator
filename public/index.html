@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Portfolio VaR Calculator</title>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/jstat@latest/dist/jstat.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation"></script>
     <style>
         body {
             font-family: Arial, sans-serif;
@@ -34,24 +34,57 @@
             background-color: #f0f0f0;
             border-radius: 5px;
         }
+        .ticker-row {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 10px;
+            align-items: center;
+        }
+
+        .ticker-input {
+            width: 100px;
+        }
+
+        .percentage-input {
+            width: 80px;
+        }
+
+        #portfolioAllocation {
+            margin: 15px 0;
+            padding: 10px;
+            background-color: #f8f8f8;
+            border-radius: 5px;
+        }
+
+        .remove-ticker {
+            background: #ff4444;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            margin: 10px 0;
+        }
     </style>
 </head>
 <body>
-    <h1>Portfolio VaR Calculator</h1>
-    
-    <div class="input-group">
-        <label for="excelFile">Upload Excel File:</label>
-        <input type="file" id="excelFile" accept=".xlsx,.xls">
+    <div id="tickerContainer">
+        <div id="portfolioAllocation">
+            Portfolio allocation: <span id="usedPercentage">0</span>% used, 
+            <span id="freePercentage">100</span>% free
+        </div>
+        <div class="ticker-rows"></div>
+        <button id="addTickerBtn">Add Ticker</button>
     </div>
 
     <div class="input-group">
         <label for="investmentAmount">Investment Amount ($):</label>
         <input type="number" id="investmentAmount" value="10000" min="1">
-    </div>
-
-    <div class="input-group">
-        <label for="numSimulations">Number of Simulations: <span id="numSimulationsValue">10000</span></label>
-        <input type="range" id="numSimulations" min="1000" max="20000" value="10000" step="1000">
     </div>
 
     <div class="input-group">
@@ -64,8 +97,6 @@
         <input type="range" id="confidenceLevel" min="0.01" max="0.99" value="0.95" step="0.01">
     </div>
 
-    <button id="calculateButton" disabled>Calculate VaR</button>
-
     <div id="results" style="display: none;">
         <h3>Results:</h3>
         <p id="varResult"></p>
@@ -74,216 +105,343 @@
     <canvas id="lossDistribution"></canvas>
 
     <script>
-        let data = null;
-        let chart = null;
-
-        // Update slider values
-        document.querySelectorAll('input[type="range"]').forEach(slider => {
-            slider.addEventListener('input', (e) => {
-                document.getElementById(`${e.target.id}Value`).textContent = e.target.value;
-            });
-        });
-
-        // Handle file upload
-        document.getElementById('excelFile').addEventListener('change', async (e) => {
-            const file = e.target.files[0];
-            const reader = new FileReader();
-
-            reader.onload = function(e) {
-                const workbook = XLSX.read(e.target.result, { type: 'array' });
-                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
-                data = XLSX.utils.sheet_to_json(firstSheet, { header: ['Ticker', 'Date', 'Price'] });
+        class PortfolioCalculator {
+            constructor(tickerManager) {
+                this.tickerManager = tickerManager;
+                this.chart = null;
                 
-                // Remove header row if present
-                if (data[0].Ticker === 'Ticker') {
-                    data.shift();
-                }
-
-                // Enable calculate button
-                document.getElementById('calculateButton').disabled = false;
-            };
-
-            reader.readAsArrayBuffer(file);
-        });
-
-        // Calculate VaR and plot distribution
-        document.getElementById('calculateButton').addEventListener('click', () => {
-            const investmentAmount = parseFloat(document.getElementById('investmentAmount').value);
-            const numSimulations = parseInt(document.getElementById('numSimulations').value);
-            const timeHorizon = parseInt(document.getElementById('timeHorizon').value);
-            const confidenceLevel = parseFloat(document.getElementById('confidenceLevel').value);
-
-            // Process data
-            const processedData = processData(data);
-            const portfolioReturns = calculatePortfolioReturns(processedData);
-            const simulationResults = performSimulation(portfolioReturns, investmentAmount, numSimulations, timeHorizon);
-            
-            // Calculate VaR
-            const var_value = calculateVaR(simulationResults.simulated_losses, confidenceLevel);
-            
-            // Display results
-            document.getElementById('results').style.display = 'block';
-            document.getElementById('varResult').textContent = 
-                `The ${(confidenceLevel * 100).toFixed(1)}% VaR over ${timeHorizon} days is: $${var_value.toFixed(2)}`;
-
-            // Plot distribution
-            plotDistribution(simulationResults.simulated_losses, var_value);
-        });
-
-        function processData(rawData) {
-            // Convert dates and prices to proper format
-            return rawData.map(row => ({
-                Ticker: row.Ticker,
-                Date: new Date(row.Date),
-                Price: parseFloat(row.Price)
-            })).filter(row => !isNaN(row.Price));
-        }
-
-        function calculatePortfolioReturns(processedData) {
-            // Group by date and calculate returns
-            const dateMap = new Map();
-            processedData.forEach(row => {
-                const dateStr = row.Date.toISOString().split('T')[0];
-                if (!dateMap.has(dateStr)) {
-                    dateMap.set(dateStr, []);
-                }
-                dateMap.get(dateStr).push(row);
-            });
-
-            // Calculate daily returns
-            const returns = [];
-            const dates = Array.from(dateMap.keys()).sort();
-            
-            for (let i = 1; i < dates.length; i++) {
-                const prevDay = dateMap.get(dates[i-1]);
-                const currentDay = dateMap.get(dates[i]);
-                
-                let dailyReturn = 0;
-                let count = 0;
-                
-                currentDay.forEach(current => {
-                    const prev = prevDay.find(p => p.Ticker === current.Ticker);
-                    if (prev) {
-                        dailyReturn += (current.Price - prev.Price) / prev.Price;
-                        count++;
-                    }
+                // Add listeners to all inputs that should trigger recalculation
+                document.getElementById('investmentAmount').addEventListener('input', () => this.recalculate());
+                document.getElementById('timeHorizon').addEventListener('input', (e) => {
+                    document.getElementById('timeHorizonValue').textContent = e.target.value;
+                    this.recalculate();
                 });
-                
-                if (count > 0) {
-                    returns.push(dailyReturn / count);
+                document.getElementById('confidenceLevel').addEventListener('input', (e) => {
+                    document.getElementById('confidenceLevelValue').textContent = e.target.value;
+                    this.recalculate();
+                });
+            }
+
+            async recalculate() {
+                if (!this.tickerManager.isValidAllocation()) {
+                    return;
                 }
-            }
 
-            return returns;
-        }
+                const portfolioData = this.tickerManager.getPortfolioData();
+                if (portfolioData.length === 0) {
+                    return;
+                }
 
-        function performSimulation(returns, portfolioValue, numSimulations, timeHorizon) {
-            // Fit t-distribution
-            const mean = jStat.mean(returns);
-            const std = jStat.stdev(returns);
-            
-            // Generate random returns
-            const simulated_returns = Array(numSimulations).fill(0).map(() => {
-                return Array(timeHorizon).fill(0).map(() => 
-                    jStat.normal.sample(mean, std)
+                this.tickerManager.exportHistoricalData();
+
+                const investmentAmount = parseFloat(document.getElementById('investmentAmount').value);
+                const numSimulations = 10000
+                const timeHorizon = parseInt(document.getElementById('timeHorizon').value);
+                const confidenceLevel = parseFloat(document.getElementById('confidenceLevel').value);
+
+                // Calculate returns for each ticker
+                const portfolioReturns = this.calculatePortfolioReturns(portfolioData);
+                
+                // Perform Monte Carlo simulation
+                const simulationResults = this.performSimulation(
+                    portfolioReturns, 
+                    investmentAmount, 
+                    numSimulations, 
+                    timeHorizon
                 );
-            });
 
-            // Calculate cumulative returns
-            const cumulative_returns = simulated_returns.map(sim => 
-                sim.reduce((acc, ret) => (1 + acc) * (1 + ret) - 1, 0)
-            );
+                // Calculate VaR
+                const varValue = this.calculateVaR(simulationResults.simulated_losses, confidenceLevel);
 
-            // Calculate portfolio values and losses
-            const simulated_portfolio_values = cumulative_returns.map(ret => 
-                portfolioValue * (1 + ret)
-            );
+                // Display results
+                document.getElementById('results').style.display = 'block';
+                document.getElementById('varResult').textContent = 
+                    `The ${(confidenceLevel * 100).toFixed(1)}% VaR over ${timeHorizon} days is: $${varValue.toFixed(2)}`;
 
-            const simulated_losses = simulated_portfolio_values.map(val => 
-                portfolioValue - val
-            );
-
-            return {
-                simulated_returns,
-                simulated_losses
-            };
-        }
-
-        function calculateVaR(losses, confidenceLevel) {
-            const sortedLosses = [...losses].sort((a, b) => a - b);
-            const index = Math.floor((1 - confidenceLevel) * losses.length);
-            return sortedLosses[index];
-        }
-
-        function plotDistribution(losses, varValue) {
-            if (chart) {
-                chart.destroy();
+                // Plot distribution
+                this.plotDistribution(simulationResults.simulated_losses, varValue);
             }
 
-            const ctx = document.getElementById('lossDistribution').getContext('2d');
-            
-            // Create histogram data
-            const binCount = 50;
-            const min = Math.min(...losses);
-            const max = Math.max(...losses);
-            const binWidth = (max - min) / binCount;
-            
-            const histogram = Array(binCount).fill(0);
-            losses.forEach(loss => {
-                const binIndex = Math.min(Math.floor((loss - min) / binWidth), binCount - 1);
-                histogram[binIndex]++;
-            });
+            calculatePortfolioReturns(portfolioData) {
+                // Calculate daily returns for each ticker
+                const returns = portfolioData.map(ticker => {
+                    const prices = ticker.priceData.map(d => d.price);
+                    const returns = [];
+                    for (let i = 1; i < prices.length; i++) {
+                        returns.push((prices[i] - prices[i-1]) / prices[i-1]);
+                    }
+                    return {
+                        returns,
+                        weight: ticker.percentage
+                    };
+                });
 
-            const labels = Array(binCount).fill(0).map((_, i) => 
-                (min + (i + 0.5) * binWidth).toFixed(2)
-            );
+                // Calculate weighted portfolio returns
+                const portfolioReturns = [];
+                const numDays = returns[0].returns.length;
+                
+                for (let day = 0; day < numDays; day++) {
+                    let dailyReturn = 0;
+                    returns.forEach(ticker => {
+                        dailyReturn += ticker.returns[day] * ticker.weight;
+                    });
+                    portfolioReturns.push(dailyReturn);
+                }
 
-            chart = new Chart(ctx, {
-                type: 'bar',
-                data: {
-                    labels: labels,
-                    datasets: [{
-                        label: 'Loss Distribution',
-                        data: histogram,
-                        backgroundColor: 'rgba(54, 162, 235, 0.5)',
-                        borderColor: 'rgba(54, 162, 235, 1)',
-                        borderWidth: 1
-                    }]
-                },
-                options: {
-                    responsive: true,
-                    scales: {
-                        y: {
-                            beginAtZero: true,
-                            title: {
-                                display: true,
-                                text: 'Frequency'
+                return portfolioReturns;
+            }
+
+            performSimulation(returns, portfolioValue, numSimulations, timeHorizon) {
+                // Calculate mean and standard deviation
+                const mean = jStat.mean(returns);
+                const std = jStat.stdev(returns);
+                
+                // Estimate degrees of freedom (using method of moments)
+                // For t-distribution, kurtosis = 6/(df-4) + 3
+                const kurtosis = jStat.kurtosis(returns);
+                const degreesOfFreedom = Math.max(6 / (kurtosis - 3) + 4, 5);
+                
+                // Function to generate random t-distributed value
+                const generateTValue = () => {
+                    // Generate t-distributed random variable
+                    const x = Math.sqrt(degreesOfFreedom / 
+                        jStat.chisquare.sample(degreesOfFreedom)) * 
+                        jStat.normal.sample(0, 1);
+                    
+                    // Scale and shift to match the desired mean and variance
+                    const scaleFactor = std * Math.sqrt((degreesOfFreedom - 2) / degreesOfFreedom);
+                    return x * scaleFactor + mean;
+                };
+
+                const simulated_returns = Array(numSimulations).fill(0).map(() => {
+                    return Array(timeHorizon).fill(0).map(() => generateTValue());
+                });
+
+                const cumulative_returns = simulated_returns.map(sim => 
+                    sim.reduce((acc, ret) => (1 + acc) * (1 + ret) - 1, 0)
+                );
+
+                const simulated_portfolio_values = cumulative_returns.map(ret => 
+                    portfolioValue * (1 + ret)
+                );
+
+                const simulated_losses = simulated_portfolio_values.map(val => 
+                    portfolioValue - val
+                );
+
+                return {
+                    simulated_returns,
+                    simulated_losses
+                };
+            }
+
+            calculateVaR(losses, confidenceLevel) {
+                const sortedLosses = [...losses].sort((a, b) => a - b);
+                const index = Math.floor((1 - confidenceLevel) * losses.length);
+                return sortedLosses[index];
+            }
+
+            plotDistribution(losses, varValue) {
+                if (this.chart) {
+                    this.chart.destroy();
+                }
+
+                const ctx = document.getElementById('lossDistribution').getContext('2d');
+                
+                const binCount = 50;
+                const min = Math.min(...losses);
+                const max = Math.max(...losses);
+                const binWidth = (max - min) / binCount;
+                
+                const histogram = Array(binCount).fill(0);
+                losses.forEach(loss => {
+                    const binIndex = Math.min(Math.floor((loss - min) / binWidth), binCount - 1);
+                    histogram[binIndex]++;
+                });
+
+                const labels = Array(binCount).fill(0).map((_, i) => 
+                    (min + (i + 0.5) * binWidth).toFixed(2)
+                );
+
+                this.chart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            label: 'Loss Distribution',
+                            data: histogram,
+                            backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                            borderColor: 'rgba(54, 162, 235, 1)',
+                            borderWidth: 1
+                        }]
+                    },
+                    options: {
+                        animation: false,
+                        responsive: true,
+                        scales: {
+                            y: {
+                                beginAtZero: true,
+                                title: {
+                                    display: true,
+                                    text: 'Frequency'
+                                }
+                            },
+                            x: {
+                                title: {
+                                    display: true,
+                                    text: 'Loss ($)'
+                                }
                             }
                         },
-                        x: {
-                            title: {
-                                display: true,
-                                text: 'Loss ($)'
-                            }
-                        }
-                    },
-                    plugins: {
-                        annotation: {
-                            annotations: {
-                                line1: {
-                                    type: 'line',
-                                    xMin: varValue,
-                                    xMax: varValue,
-                                    borderColor: 'red',
-                                    borderWidth: 2,
-                                    borderDash: [5, 5]
+                        plugins: {
+                            annotation: {
+                                annotations: {
+                                    line1: {
+                                        type: 'line',
+                                        xMin: varValue,
+                                        xMax: varValue,
+                                        borderColor: 'red',
+                                        borderWidth: 2,
+                                        borderDash: [5, 5]
+                                    }
                                 }
                             }
                         }
                     }
-                }
-            });
+                });
+            }
         }
+
+        class TickerManager {
+            constructor() {
+                this.tickerRows = [];
+                this.addTickerBtn = document.getElementById('addTickerBtn');
+                this.tickerContainer = document.querySelector('.ticker-rows');
+                this.calculator = null;
+                
+                this.addTickerBtn.addEventListener('click', () => this.addTickerRow());
+                this.updateAllocation();
+            }
+
+            setCalculator(calculator) {
+                this.calculator = calculator;
+            }
+
+            addTickerRow() {
+                const row = document.createElement('div');
+                row.className = 'ticker-row';
+                
+                const tickerInput = document.createElement('input');
+                tickerInput.type = 'text';
+                tickerInput.className = 'ticker-input';
+                tickerInput.placeholder = 'Ticker';
+                
+                const percentageInput = document.createElement('input');
+                percentageInput.type = 'number';
+                percentageInput.className = 'percentage-input';
+                percentageInput.placeholder = '%';
+                percentageInput.min = 0;
+                percentageInput.max = 100;
+                percentageInput.value = 0;
+                
+                const removeBtn = document.createElement('button');
+                removeBtn.className = 'remove-ticker';
+                removeBtn.textContent = '×';
+                
+                row.appendChild(tickerInput);
+                row.appendChild(percentageInput);
+                row.appendChild(removeBtn);
+                
+                this.tickerContainer.appendChild(row);
+                
+                // Update event listeners to trigger recalculation
+                percentageInput.addEventListener('input', () => {
+                    this.updateAllocation();
+                    this.calculator?.recalculate();
+                });
+                
+                removeBtn.addEventListener('click', () => {
+                    row.remove();
+                    this.updateAllocation();
+                    this.calculator?.recalculate();
+                });
+                
+                tickerInput.addEventListener('change', async () => {
+                    try {
+                        const response = await fetch(`/historicalPriceDataForTicker/${tickerInput.value}`);
+                        if (!response.ok) throw new Error('Invalid ticker');
+                        const data = await response.json();
+                        console.log(data);
+                        row.dataset.priceData = JSON.stringify(data);
+                        this.calculator?.recalculate();
+                    } catch (error) {
+                        alert(`Error fetching data for ${tickerInput.value}: ${error.message}`);
+                        tickerInput.value = '';
+                    }
+                });
+            }
+
+            updateAllocation() {
+                const percentages = Array.from(document.querySelectorAll('.percentage-input'))
+                    .map(input => parseFloat(input.value) || 0);
+                
+                const totalUsed = percentages.reduce((sum, p) => sum + p, 0);
+                const freePercentage = 100 - totalUsed;
+                
+                document.getElementById('usedPercentage').textContent = totalUsed.toFixed(1);
+                document.getElementById('freePercentage').textContent = freePercentage.toFixed(1);
+                
+            }
+
+            isValidAllocation() {
+                const totalUsed = Array.from(document.querySelectorAll('.percentage-input'))
+                    .reduce((sum, input) => sum + (parseFloat(input.value) || 0), 0);
+                return Math.abs(totalUsed - 100) < 0.01;
+            }
+
+            getPortfolioData() {
+                return Array.from(document.querySelectorAll('.ticker-row'))
+                    .map(row => ({
+                        ticker: row.querySelector('.ticker-input').value,
+                        percentage: parseFloat(row.querySelector('.percentage-input').value) / 100,
+                        priceData: JSON.parse(row.dataset.priceData || '[]')
+                    }))
+                    .filter(data => data.ticker && data.percentage > 0);
+            }
+
+            exportHistoricalData() {
+                const portfolioData = this.getPortfolioData();
+                const exportData = [];
+                
+                portfolioData.forEach(({ ticker, priceData }) => {
+                    priceData.forEach(({ date, price }) => {
+                        exportData.push({
+                            Ticker: ticker,
+                            Date: date,
+                            Price: price
+                        });
+                    });
+                });
+
+                // Sort by date and format for easy copy-paste
+                exportData.sort((a, b) => new Date(a.Date) - new Date(b.Date));
+                
+                // Convert to CSV-like format
+                const csvData = exportData.map(row => 
+                    `${row.Ticker},${row.Date},${row.Price}`
+                ).join('\n');
+                
+                console.log('Copy this data to Excel/CSV for Python script:');
+                console.log('Ticker,Date,Price');
+                console.log(csvData);
+            }
+        }
+
+        // Initialize managers
+        const tickerManager = new TickerManager();
+        const calculator = new PortfolioCalculator(tickerManager);
+        tickerManager.setCalculator(calculator);
+        tickerManager.addTickerRow(); // Add first row by default
     </script>
 </body>
 </html>
