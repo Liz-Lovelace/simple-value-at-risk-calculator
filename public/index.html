@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Portfolio VaR Calculator</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/jstat@latest/dist/jstat.min.js"></script>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            max-width: 800px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .input-group {
+            margin-bottom: 15px;
+        }
+        label {
+            display: block;
+            margin-bottom: 5px;
+        }
+        .slider-value {
+            display: inline-block;
+            margin-left: 10px;
+        }
+        canvas {
+            margin-top: 20px;
+        }
+        #results {
+            margin-top: 20px;
+            padding: 10px;
+            background-color: #f0f0f0;
+            border-radius: 5px;
+        }
+    </style>
+</head>
+<body>
+    <h1>Portfolio VaR Calculator</h1>
+    
+    <div class="input-group">
+        <label for="excelFile">Upload Excel File:</label>
+        <input type="file" id="excelFile" accept=".xlsx,.xls">
+    </div>
+
+    <div class="input-group">
+        <label for="investmentAmount">Investment Amount ($):</label>
+        <input type="number" id="investmentAmount" value="10000" min="1">
+    </div>
+
+    <div class="input-group">
+        <label for="numSimulations">Number of Simulations: <span id="numSimulationsValue">10000</span></label>
+        <input type="range" id="numSimulations" min="1000" max="20000" value="10000" step="1000">
+    </div>
+
+    <div class="input-group">
+        <label for="timeHorizon">Time Horizon (days): <span id="timeHorizonValue">21</span></label>
+        <input type="range" id="timeHorizon" min="1" max="365" value="21">
+    </div>
+
+    <div class="input-group">
+        <label for="confidenceLevel">Confidence Level: <span id="confidenceLevelValue">0.95</span></label>
+        <input type="range" id="confidenceLevel" min="0.01" max="0.99" value="0.95" step="0.01">
+    </div>
+
+    <button id="calculateButton" disabled>Calculate VaR</button>
+
+    <div id="results" style="display: none;">
+        <h3>Results:</h3>
+        <p id="varResult"></p>
+    </div>
+
+    <canvas id="lossDistribution"></canvas>
+
+    <script>
+        let data = null;
+        let chart = null;
+
+        // Update slider values
+        document.querySelectorAll('input[type="range"]').forEach(slider => {
+            slider.addEventListener('input', (e) => {
+                document.getElementById(`${e.target.id}Value`).textContent = e.target.value;
+            });
+        });
+
+        // Handle file upload
+        document.getElementById('excelFile').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            const reader = new FileReader();
+
+            reader.onload = function(e) {
+                const workbook = XLSX.read(e.target.result, { type: 'array' });
+                const firstSheet = workbook.Sheets[workbook.SheetNames[0]];
+                data = XLSX.utils.sheet_to_json(firstSheet, { header: ['Ticker', 'Date', 'Price'] });
+                
+                // Remove header row if present
+                if (data[0].Ticker === 'Ticker') {
+                    data.shift();
+                }
+
+                // Enable calculate button
+                document.getElementById('calculateButton').disabled = false;
+            };
+
+            reader.readAsArrayBuffer(file);
+        });
+
+        // Calculate VaR and plot distribution
+        document.getElementById('calculateButton').addEventListener('click', () => {
+            const investmentAmount = parseFloat(document.getElementById('investmentAmount').value);
+            const numSimulations = parseInt(document.getElementById('numSimulations').value);
+            const timeHorizon = parseInt(document.getElementById('timeHorizon').value);
+            const confidenceLevel = parseFloat(document.getElementById('confidenceLevel').value);
+
+            // Process data
+            const processedData = processData(data);
+            const portfolioReturns = calculatePortfolioReturns(processedData);
+            const simulationResults = performSimulation(portfolioReturns, investmentAmount, numSimulations, timeHorizon);
+            
+            // Calculate VaR
+            const var_value = calculateVaR(simulationResults.simulated_losses, confidenceLevel);
+            
+            // Display results
+            document.getElementById('results').style.display = 'block';
+            document.getElementById('varResult').textContent = 
+                `The ${(confidenceLevel * 100).toFixed(1)}% VaR over ${timeHorizon} days is: $${var_value.toFixed(2)}`;
+
+            // Plot distribution
+            plotDistribution(simulationResults.simulated_losses, var_value);
+        });
+
+        function processData(rawData) {
+            // Convert dates and prices to proper format
+            return rawData.map(row => ({
+                Ticker: row.Ticker,
+                Date: new Date(row.Date),
+                Price: parseFloat(row.Price)
+            })).filter(row => !isNaN(row.Price));
+        }
+
+        function calculatePortfolioReturns(processedData) {
+            // Group by date and calculate returns
+            const dateMap = new Map();
+            processedData.forEach(row => {
+                const dateStr = row.Date.toISOString().split('T')[0];
+                if (!dateMap.has(dateStr)) {
+                    dateMap.set(dateStr, []);
+                }
+                dateMap.get(dateStr).push(row);
+            });
+
+            // Calculate daily returns
+            const returns = [];
+            const dates = Array.from(dateMap.keys()).sort();
+            
+            for (let i = 1; i < dates.length; i++) {
+                const prevDay = dateMap.get(dates[i-1]);
+                const currentDay = dateMap.get(dates[i]);
+                
+                let dailyReturn = 0;
+                let count = 0;
+                
+                currentDay.forEach(current => {
+                    const prev = prevDay.find(p => p.Ticker === current.Ticker);
+                    if (prev) {
+                        dailyReturn += (current.Price - prev.Price) / prev.Price;
+                        count++;
+                    }
+                });
+                
+                if (count > 0) {
+                    returns.push(dailyReturn / count);
+                }
+            }
+
+            return returns;
+        }
+
+        function performSimulation(returns, portfolioValue, numSimulations, timeHorizon) {
+            // Fit t-distribution
+            const mean = jStat.mean(returns);
+            const std = jStat.stdev(returns);
+            
+            // Generate random returns
+            const simulated_returns = Array(numSimulations).fill(0).map(() => {
+                return Array(timeHorizon).fill(0).map(() => 
+                    jStat.normal.sample(mean, std)
+                );
+            });
+
+            // Calculate cumulative returns
+            const cumulative_returns = simulated_returns.map(sim => 
+                sim.reduce((acc, ret) => (1 + acc) * (1 + ret) - 1, 0)
+            );
+
+            // Calculate portfolio values and losses
+            const simulated_portfolio_values = cumulative_returns.map(ret => 
+                portfolioValue * (1 + ret)
+            );
+
+            const simulated_losses = simulated_portfolio_values.map(val => 
+                portfolioValue - val
+            );
+
+            return {
+                simulated_returns,
+                simulated_losses
+            };
+        }
+
+        function calculateVaR(losses, confidenceLevel) {
+            const sortedLosses = [...losses].sort((a, b) => a - b);
+            const index = Math.floor((1 - confidenceLevel) * losses.length);
+            return sortedLosses[index];
+        }
+
+        function plotDistribution(losses, varValue) {
+            if (chart) {
+                chart.destroy();
+            }
+
+            const ctx = document.getElementById('lossDistribution').getContext('2d');
+            
+            // Create histogram data
+            const binCount = 50;
+            const min = Math.min(...losses);
+            const max = Math.max(...losses);
+            const binWidth = (max - min) / binCount;
+            
+            const histogram = Array(binCount).fill(0);
+            losses.forEach(loss => {
+                const binIndex = Math.min(Math.floor((loss - min) / binWidth), binCount - 1);
+                histogram[binIndex]++;
+            });
+
+            const labels = Array(binCount).fill(0).map((_, i) => 
+                (min + (i + 0.5) * binWidth).toFixed(2)
+            );
+
+            chart = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [{
+                        label: 'Loss Distribution',
+                        data: histogram,
+                        backgroundColor: 'rgba(54, 162, 235, 0.5)',
+                        borderColor: 'rgba(54, 162, 235, 1)',
+                        borderWidth: 1
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    scales: {
+                        y: {
+                            beginAtZero: true,
+                            title: {
+                                display: true,
+                                text: 'Frequency'
+                            }
+                        },
+                        x: {
+                            title: {
+                                display: true,
+                                text: 'Loss ($)'
+                            }
+                        }
+                    },
+                    plugins: {
+                        annotation: {
+                            annotations: {
+                                line1: {
+                                    type: 'line',
+                                    xMin: varValue,
+                                    xMax: varValue,
+                                    borderColor: 'red',
+                                    borderWidth: 2,
+                                    borderDash: [5, 5]
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+        }
+    </script>
+</body>
+</html>
