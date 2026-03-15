@@ -1,7 +1,9 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import yahooFinance from 'yahoo-finance2';
+import YahooFinance from 'yahoo-finance2';
+
+const yahooFinance = new YahooFinance();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -26,8 +28,8 @@ app.get('/historicalPriceDataForTicker/:ticker', async (req, res) => {
             interval: '1d'
         };
 
-        const result = await yahooFinance.historical(ticker, queryOptions);
-        const formattedData = result.map(item => ({
+        const result = await yahooFinance.chart(ticker, queryOptions);
+        const formattedData = result.quotes.map(item => ({
             date: item.date,
             price: item.close
         }));
